@@ -9,12 +9,31 @@ from broker.event_log import Event, format_ts, utcnow
 
 TOOL_RESULT_MAX = 4096
 
+#: SystemMessage subtypes that are per-turn telemetry, not events. Dropped
+#: rather than downgraded: a log line whose only content is a token counter
+#: costs an operator attention on every scroll and repays none of it.
+QUIET_SYSTEM_SUBTYPES = frozenset({
+	"thinking_tokens",
+	"mirror_error",  # surfaced through the store's own error path already
+})
+
 
 def _safe_repr(obj: Any) -> str:
 	try:
 		return repr(obj)[:4096]
 	except Exception:
 		return "<unreprable>"
+
+
+def _is_empty(event: Event) -> bool:
+	"""An event carrying no information. A ThinkingBlock with empty text is the
+	common one — the SDK emits it whenever extended thinking is on but produced
+	nothing for that block, and it reads in the log as if something happened."""
+	if event.type == "thinking":
+		return not (event.data.get("text") or "").strip()
+	if event.type == "assistant_text":
+		return not (event.data.get("text") or "").strip()
+	return False
 
 
 def _block_event(block: Any, idx: int) -> Event:
@@ -110,9 +129,47 @@ def normalise(msg: Any, idx: int) -> list[Event]:
 				)
 			]
 
-	if msg_type == "AssistantMessage":
+		# Everything else the CLI sends as a SystemMessage is telemetry about the
+		# turn rather than an event in it. `thinking_tokens` alone was most of a
+		# real session's log, every one of them reported as an *error* — which
+		# teaches an operator that the error colour means nothing, and that is
+		# how a genuine failure ends up unread.
+		if subtype in QUIET_SYSTEM_SUBTYPES:
+			return []
+		return [
+			Event(
+				index=idx,
+				type="system",
+				at=format_ts(utcnow()),
+				data={"subtype": subtype, "data": data},
+			)
+		]
+
+	# Tool results arrive on a UserMessage — the SDK models them as the user
+	# handing output back to the model. Without this branch the ToolResultBlock
+	# mapping above was unreachable, so every tool result was an "unmapped"
+	# Python repr: the most useful line in an ops log rendered as the least
+	# readable thing in it.
+	if msg_type in ("AssistantMessage", "UserMessage"):
 		blocks = getattr(msg, "content", []) or []
-		return [_block_event(b, idx + i) for i, b in enumerate(blocks)]
+		if isinstance(blocks, str):  # a plain text turn, nothing to unpack
+			return []
+		events = [_block_event(b, idx + i) for i, b in enumerate(blocks)]
+		return [e for e in events if not _is_empty(e)]
+
+	if msg_type == "RateLimitEvent":
+		return [
+			Event(
+				index=idx,
+				type="rate_limit",
+				at=format_ts(utcnow()),
+				data={
+					"status": getattr(msg, "status", None),
+					"retry_after": getattr(msg, "retry_after", None),
+					"details": _safe_repr(msg)[:500],
+				},
+			)
+		]
 
 	if msg_type == "ResultMessage":
 		return [
