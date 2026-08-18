@@ -83,3 +83,20 @@ def test_rate_limit_is_its_own_event() -> None:
 def test_a_plain_string_user_turn_adds_nothing() -> None:
 	"""The prompt MOM just sent is not news to the log."""
 	assert normalise(UserMessage(content="do the thing"), 0) == []
+
+
+class TaskUpdatedMessage(SimpleNamespace):
+	pass
+
+
+def test_subagent_progress_is_readable() -> None:
+	"""Fan-out made this the line that matters: which worker is still going."""
+	msg = TaskUpdatedMessage(
+		subtype="task_updated",
+		data={"task_id": "a03", "patch": {"status": "completed", "title": "Prior art",
+										   "tool_use_count": 7}},
+	)
+	events = normalise(msg, 0)
+	assert [e.type for e in events] == ["subagent"]
+	assert events[0].data["status"] == "completed"
+	assert events[0].data["title"] == "Prior art"

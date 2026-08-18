@@ -157,6 +157,28 @@ def normalise(msg: Any, idx: int) -> list[Event]:
 		events = [_block_event(b, idx + i) for i, b in enumerate(blocks)]
 		return [e for e in events if not _is_empty(e)]
 
+	# Subagent lifecycle. Worth mapping rather than quieting: once a turn fans out
+	# to five parallel workers, "which of them is still going" is the only thing
+	# an operator watching a long run actually wants to know, and as an unmapped
+	# Python repr it was the least readable line in the log.
+	if msg_type in ("TaskNotificationMessage", "TaskUpdatedMessage", "TaskStartedMessage"):
+		data = getattr(msg, "data", {}) or {}
+		patch = data.get("patch") or {}
+		return [
+			Event(
+				index=idx,
+				type="subagent",
+				at=format_ts(utcnow()),
+				data={
+					"task_id": data.get("task_id"),
+					"event": getattr(msg, "subtype", None),
+					"status": patch.get("status") or data.get("status"),
+					"title": patch.get("title") or data.get("title") or data.get("description"),
+					"tool_count": patch.get("tool_use_count") or data.get("tool_use_count"),
+				},
+			)
+		]
+
 	if msg_type == "RateLimitEvent":
 		return [
 			Event(
