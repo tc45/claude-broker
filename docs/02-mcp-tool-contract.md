@@ -200,6 +200,7 @@ Reads events from a cursor. Idempotent and safe to retry.
 | `tool_result` | `ToolResultBlock` | `tool_use_id`, `is_error`, `summary`, `content` |
 | `permission_request` | Parked `can_use_tool` | `request_id`, `tool`, `input`, `expires_at` |
 | `permission_decision` | Resolution | `request_id`, `decision`, `decided_by`, `reason` |
+| `permission_decision` | Decided by policy alone, never parked | no `request_id`; `tool`, `input`, `decision`, `decided_by`, `reason`, `matched_rule` |
 | `api_retry` | `SystemMessage(subtype="api_retry")` | `attempt`, `max_retries`, `retry_delay_ms`, `error` |
 | `turn_result` | `ResultMessage` | `turn_id`, `is_error`, `num_turns`, `total_cost_usd`, `usage`, `result`, `stop_reason` |
 | `state_change` | Broker transition | `from`, `to`, `reason` |

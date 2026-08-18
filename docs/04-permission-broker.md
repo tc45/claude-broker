@@ -218,4 +218,14 @@ Appended to `sessions/<id>/permissions.jsonl`:
 lets you prove after the fact exactly what was approved without storing potentially large or sensitive
 payloads twice.
 
-`decided_by` ∈ `policy` | `guard` | `mcp_client` | `timeout` | `interrupt`.
+`decided_by` ∈ `policy` | `guard` | `mcp_client` | `timeout` | `interrupt` | `broker_error`.
+
+A decision the policy or a guard makes on its own is answered straight to the SDK — no request is
+parked, so there is no `request_id`. It still emits a `permission_decision` event, because otherwise a
+denial is invisible: the transcript shows a `tool_use` with no outcome and an observer has nothing to
+explain why the run then stalled on whatever the model reached for next.
+
+`broker_error` is the fail-closed path: any exception inside `can_use_tool` becomes a deny with the
+error text as its reason. Letting it escape instead makes the SDK answer the CLI's permission request
+with a control-protocol *error*, and the CLI then never produces a `tool_result` — the turn never ends
+and the session sits in `running` forever.

@@ -68,6 +68,34 @@ class Event:
 		)
 
 	@classmethod
+	def immediate_decision(
+		cls,
+		idx: int,
+		tool: str,
+		input_data: dict[str, Any],
+		decision: Any,
+	) -> Event:
+		"""A permission decided by policy alone — no request_id, nobody asked.
+
+		Same event type as the parked path so observers need one handler; the
+		absent request_id is what distinguishes "the policy answered this" from
+		"a human answered p_003".
+		"""
+		return cls(
+			index=idx,
+			type="permission_decision",
+			at=format_ts(utcnow()),
+			data={
+				"tool": tool,
+				"input": input_data,
+				"decision": decision.verdict,
+				"decided_by": decision.decided_by,
+				"reason": decision.reason,
+				"matched_rule": decision.rule_text,
+			},
+		)
+
+	@classmethod
 	def state_change(cls, idx: int, from_state: str, to_state: str, reason: str) -> Event:
 		return cls(
 			index=idx,

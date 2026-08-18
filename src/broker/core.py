@@ -568,6 +568,39 @@ class BrokerCore:
 			"cursor": session.event_log.cursor,
 		}
 
+	async def _abandon_turn(self, session: Session, *, reason: str) -> None:
+		"""Interrupt an in-flight turn so the session can leave a running state.
+
+		Closing a session with a live turn used to trip the registry invariant
+		("non-running state should not have running turn") and raise, which left
+		the session permanently un-closeable — the worst possible failure for the
+		one call whose job is to clean up. Unpark any waiting permission callback,
+		best-effort interrupt the CLI, and retire the turn first.
+		"""
+		if session.state not in (SessionState.RUNNING, SessionState.AWAITING_PERMISSION):
+			return
+
+		for req in self.permissions.list_pending(session.session_id):
+			try:
+				self.permissions.resolve(req["request_id"], "deny", reason=reason)
+			except Exception:
+				# Already resolved or expired: the callback is unparked either way.
+				logger.debug("pending_resolve_skipped", request_id=req["request_id"])
+
+		try:
+			# Best effort, and bounded: a wedged CLI must not stop us closing.
+			await asyncio.wait_for(session.client.interrupt(), timeout=5)
+		except Exception:
+			logger.debug("interrupt_on_close_failed", session_id=session.session_id)
+
+		turn = session.current_turn
+		if turn is not None:
+			turn.state = "interrupted"
+			turn.end_cursor = session.event_log.cursor
+			session.turn_history.append(turn)
+			session.current_turn = None
+		session.wakeup.set()
+
 	async def close_session(self, session_id: str, reason: str = "") -> dict[str, Any]:
 		session = self.registry.get(session_id)
 		if session is None:
@@ -592,6 +625,8 @@ class BrokerCore:
 				"turns": session.cost.turns,
 				"transcript_path": str(session.session_dir / "events.jsonl"),
 			}
+
+		await self._abandon_turn(session, reason="session_close")
 
 		if session.consumer_task and not session.consumer_task.done():
 			session.consumer_task.cancel()

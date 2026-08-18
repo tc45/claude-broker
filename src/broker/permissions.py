@@ -15,6 +15,7 @@ import structlog
 import yaml
 
 from broker.errors import PermissionExpiredError, PermissionNotFoundError
+from broker.event_log import Event
 from broker.registry import Session, SessionState
 
 logger = structlog.get_logger()
@@ -113,39 +114,30 @@ def _apply_guard(
 	if decision.verdict != "allow":
 		return decision
 	if guard == "workspace_write":
-		paths = _extract_paths(tool_name, input_data)
-		allowed_roots = [session.workspace] + [
-			Path(p) for p in session.additional_directories
-		]
-		from pathlib import Path
-
-		for path_str in paths:
+		allowed_roots = [session.workspace, *(Path(p) for p in session.additional_directories)]
+		for path_str in _extract_paths(tool_name, input_data):
 			try:
-				p = Path(path_str).resolve()
-				contained = any(
-					_p.resolve() in p.parents or p == _p.resolve()
-					for _p in allowed_roots
-					if _p.exists() or True
-				)
-				for root in allowed_roots:
-					try:
-						p.relative_to(root.resolve())
-						contained = True
-						break
-					except ValueError:
-						continue
-				if not contained:
-					return RuleDecision(
-						verdict="deny",
-						reason="Path outside workspace",
-						rule_text=decision.rule_text,
-						decided_by="guard",
-						guard=guard,
-					)
+				target = _resolve_target(path_str, session.workspace)
 			except OSError:
 				return RuleDecision(
 					verdict="deny",
-					reason="Invalid path",
+					reason=f"{tool_name} target {path_str!r} is not a usable path.",
+					rule_text=decision.rule_text,
+					decided_by="guard",
+					guard=guard,
+				)
+			if not _confined(target, allowed_roots):
+				roots = ", ".join(str(r) for r in allowed_roots)
+				# The reason is the only thing the model sees, and the only thing an
+				# observer sees in the permission_decision event. Name the path.
+				return RuleDecision(
+					verdict="deny",
+					reason=(
+						f"{tool_name} to {path_str!r} resolves to {target}, which is "
+						f"outside the session workspace ({roots}). "
+						f"Use a path inside the workspace instead."
+					),
+					rule_text=decision.rule_text,
 					decided_by="guard",
 					guard=guard,
 				)
@@ -178,6 +170,34 @@ def _apply_guard(
 					guard=guard,
 				)
 	return decision
+
+
+def _resolve_target(path_str: str, workspace: Path) -> Path:
+	"""Resolve a tool path the way the tool itself will see it.
+
+	The CLI normally sends absolute paths, but a model can hand Write a bare
+	filename. That resolves against the CLI's cwd — the session workspace — not
+	against the broker process's cwd, which is where a plain Path().resolve()
+	would put it and which would judge an in-workspace write against the wrong
+	root.
+	"""
+	target = Path(path_str)
+	if not target.is_absolute():
+		target = workspace / target
+	# strict=False: the file usually does not exist yet, but symlinks in the
+	# existing prefix still get resolved, so an escape via a symlinked dir is
+	# caught here rather than at write time.
+	return target.resolve()
+
+
+def _confined(target: Path, roots: list[Path]) -> bool:
+	for root in roots:
+		try:
+			target.relative_to(root.resolve())
+			return True
+		except (OSError, ValueError):
+			continue
+	return False
 
 
 def _extract_paths(tool_name: str, input_data: dict[str, Any]) -> list[str]:
@@ -328,18 +348,68 @@ class PermissionBroker:
 		with open(audit_path, "a", encoding="utf-8") as f:
 			f.write(json.dumps(record) + "\n")
 
+	def _emit_decision(
+		self,
+		session: Session,
+		tool: str,
+		input_data: dict[str, Any],
+		decision: RuleDecision,
+	) -> None:
+		"""Record a decision taken without parking, so an observer can see it.
+
+		A policy or guard deny is answered straight back to the SDK and never
+		becomes a PendingRequest, so nothing used to reach the event log: the run
+		stalled (the model usually falls back to a tool that *does* need approval)
+		and the transcript showed a tool_use with no outcome. Poll-only observers
+		had literally nothing to explain the stall.
+		"""
+		session.event_log.append(
+			Event.immediate_decision(session.event_log.cursor, tool, input_data, decision)
+		)
+		session.wakeup.set()
+
 	def make_callback(self, session_id: str, policy: Policy) -> Any:
 		async def can_use_tool(
 			tool_name: str,
 			input_data: dict[str, Any],
 			context: Any = None,
 		) -> Any:
-			from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+			from claude_agent_sdk import PermissionResultDeny
 
 			session = self._registry.get(session_id)
 			if session is None:
 				return PermissionResultDeny(message="Session not found")
+			try:
+				return await decide(session, tool_name, input_data, context)
+			except Exception as exc:
+				# An exception escaping into the SDK is answered as a
+				# control-protocol *error*, not a permission result: the CLI never
+				# produces a tool_result, the turn never ends, and the session sits
+				# in RUNNING with nothing in the log to say why. Fail closed and
+				# visibly instead — the model can then pick another path.
+				logger.exception(
+					"permission_callback_failed", session_id=session_id, tool=tool_name
+				)
+				reason = f"Permission check failed inside the broker: {exc!r}"
+				failure = RuleDecision(
+					verdict="deny", reason=reason, decided_by="broker_error"
+				)
+				try:
+					self.audit(session_id, tool_name, input_data, failure)
+					self._emit_decision(session, tool_name, input_data, failure)
+				except Exception:  # pragma: no cover - logging must not mask the deny
+					logger.exception("permission_failure_not_recorded", session_id=session_id)
+				return PermissionResultDeny(message=reason)
 
+		async def decide(
+			session: Session,
+			tool_name: str,
+			input_data: dict[str, Any],
+			context: Any,
+		) -> Any:
+			from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+			session_id = session.session_id
 			start = utcnow()
 			decision = policy.evaluate(tool_name, input_data, session)
 			self.audit(
@@ -355,7 +425,10 @@ class PermissionBroker:
 				return PermissionResultAllow()
 
 			if decision.verdict == "deny":
-				return PermissionResultDeny(message=decision.reason or "Denied by policy")
+				reason = decision.reason or f"Denied by policy ({decision.rule_text})"
+				decision.reason = reason
+				self._emit_decision(session, tool_name, input_data, decision)
+				return PermissionResultDeny(message=reason)
 
 			suggestions = getattr(context, "suggestions", []) if context else []
 			request = PendingRequest(
@@ -372,9 +445,7 @@ class PermissionBroker:
 			if session.current_turn:
 				session.current_turn.permission_requests.append(request.request_id)
 			session.event_log.append(
-				__import__("broker.event_log", fromlist=["Event"]).Event.permission_request(
-					session.event_log.cursor, request
-				)
+				Event.permission_request(session.event_log.cursor, request)
 			)
 			async with session.lock:
 				session.transition(SessionState.AWAITING_PERMISSION, reason=request.request_id)
@@ -413,9 +484,7 @@ class PermissionBroker:
 				latency_ms=latency,
 			)
 			session.event_log.append(
-				__import__("broker.event_log", fromlist=["Event"]).Event.permission_decision(
-					session.event_log.cursor, request
-				)
+				Event.permission_decision(session.event_log.cursor, request)
 			)
 			session.wakeup.set()
 

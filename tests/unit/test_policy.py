@@ -112,3 +112,38 @@ def test_u29_autonomous_sudo(engine: PolicyEngine) -> None:
 	policy = engine.get("autonomous")
 	d = policy.evaluate("Bash", {"command": "sudo rm file"}, FakeSession(Path("/ws")))
 	assert d.verdict == "deny"
+
+
+def test_u30_workspace_write_names_the_path(tmp_path: Path, engine: PolicyEngine) -> None:
+	ws = tmp_path / "ws"
+	ws.mkdir()
+	policy = engine.get("reviewed")
+	d = policy.evaluate("Write", {"file_path": "/tmp/MOM_OK.txt"}, FakeSession(ws))
+	assert d.verdict == "deny"
+	assert d.decided_by == "guard"
+	assert "MOM_OK.txt" in (d.reason or ""), "the model and the log need the offending path"
+
+
+def test_u31_workspace_write_with_additional_directories(
+	tmp_path: Path, engine: PolicyEngine
+) -> None:
+	"""A session with add_dirs used to crash the guard with UnboundLocalError."""
+	ws = tmp_path / "ws"
+	ws.mkdir()
+	extra = tmp_path / "extra"
+	extra.mkdir()
+	policy = engine.get("reviewed")
+	session = FakeSession(ws, additional=[str(extra)])
+	assert policy.evaluate("Edit", {"file_path": str(extra / "a.py")}, session).verdict == "allow"
+	assert policy.evaluate("Edit", {"file_path": "/etc/passwd"}, session).verdict == "deny"
+
+
+def test_u32_relative_path_is_resolved_against_the_workspace(
+	tmp_path: Path, engine: PolicyEngine
+) -> None:
+	"""A bare filename is written to the CLI's cwd, which is the workspace."""
+	ws = tmp_path / "ws"
+	ws.mkdir()
+	policy = engine.get("reviewed")
+	d = policy.evaluate("Write", {"file_path": "OK.txt"}, FakeSession(ws))
+	assert d.verdict == "allow"
