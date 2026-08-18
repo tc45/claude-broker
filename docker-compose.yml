@@ -1,0 +1,55 @@
+﻿services:
+  claude-broker:
+    build:
+      context: .
+      args:
+        CLAUDE_CLI_VERSION: "2.1.219"
+    image: claude-broker:1.0.0
+    container_name: claude-broker
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      BROKER_TRANSPORT: http
+      BROKER_HOST: 0.0.0.0
+      BROKER_PORT: "8787"
+      BROKER_DEFAULT_POLICY: reviewed
+      BROKER_POLICY_FILE: /app/policies/default.yaml
+      BROKER_MAX_SESSIONS: "8"
+      BROKER_DEFAULT_BUDGET_USD: "2.00"
+      BROKER_GLOBAL_BUDGET_USD: "50.00"
+      BROKER_LOG_LEVEL: INFO
+      BROKER_SKIP_AUTH_PROBE: "1"
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+      BROKER_AUTH_TOKEN: ${BROKER_AUTH_TOKEN}
+      ANTHROPIC_API_KEY: ""
+      ANTHROPIC_AUTH_TOKEN: ""
+
+    ports:
+      - "127.0.0.1:8787:8787"
+
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_DIR:-./workspace}
+        target: /workspace
+      - claude-broker-state:/var/lib/claude-broker
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      # The claude CLI needs a writable HOME (node state, caches, lockfiles).
+      # read_only:true leaves /home/broker read-only, which makes session_create
+      # hang and surface only as the opaque "Session init timed out".
+      # tmpfs keeps the read-only rootfs guarantee while giving the CLI a home.
+      - /home/broker:size=256m,mode=0700,uid=10001,gid=10001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 6g
+
+volumes:
+  claude-broker-state:

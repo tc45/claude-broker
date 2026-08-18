@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-broker"
+version = "1.0.0"
+description = "MCP broker wrapping claude-agent-sdk for subscription-backed headless sessions"
+requires-python = ">=3.12"
+dependencies = [
+	"claude-agent-sdk==0.2.129",
+	"mcp>=1.0.0",
+	"pydantic>=2.0",
+	"pyyaml>=6.0",
+	"structlog>=24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+	"pytest>=8.0",
+	"pytest-asyncio>=0.24",
+	"pytest-cov>=5.0",
+	"ruff>=0.8",
+	"mypy>=1.13",
+	"types-PyYAML",
+]
+
+[project.scripts]
+broker = "broker.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/broker"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+	"integration: integration tests with fake SDK",
+	"live: live tests requiring real token",
+]
+testpaths = ["tests"]
+addopts = "-m 'not live' --cov=broker --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/broker"]
+omit = [
+	"src/broker/__main__.py",
+	"src/broker/healthcheck.py",
+	"src/broker/mcp_server.py",
+	"src/broker/reaper.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_lines = [
+	"pragma: no cover",
+	"if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["W191", "E101", "SIM102", "SIM105", "SIM108"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["broker"]
+mypy_path = "src"
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["claude_agent_sdk.*", "mcp.*"]
+ignore_missing_imports = true

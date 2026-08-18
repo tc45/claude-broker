@@ -1,0 +1,48 @@
+policies:
+
+  readonly:
+    description: Inspection only. Cannot mutate the workspace.
+    default: deny
+    rules:
+      - {match: "Read",          decision: allow}
+      - {match: "Glob",          decision: allow}
+      - {match: "Grep",          decision: allow}
+      - {match: "NotebookRead",  decision: allow}
+      - {match: "Bash(git log *)",    decision: allow}
+      - {match: "Bash(git diff *)",   decision: allow}
+      - {match: "Bash(git status *)", decision: allow}
+      - {match: "WebFetch",      decision: ask}
+      - {match: "WebSearch",     decision: ask}
+
+  reviewed:
+    description: Default. Reads and edits freely; asks before shell and network.
+    default: ask
+    rules:
+      - {match: "Read",   decision: allow}
+      - {match: "Glob",   decision: allow}
+      - {match: "Grep",   decision: allow}
+      - {match: "Edit",   decision: allow, guard: workspace_write}
+      - {match: "Write",  decision: allow, guard: workspace_write}
+      - {match: "TodoWrite", decision: allow}
+      - {match: "Bash(git *)",   decision: allow, guard: no_push}
+      - {match: "Bash(npm test*)",   decision: allow}
+      - {match: "Bash(pytest *)",    decision: allow}
+      - {match: "Bash(rm *)",    decision: deny, reason: "Deletion requires an explicit policy."}
+      - {match: "Bash(sudo *)",  decision: deny, reason: "Privilege escalation is never permitted."}
+      - {match: "Bash(curl *)",  decision: ask}
+      - {match: "Bash",          decision: ask}
+      - {match: "mcp__*",        decision: ask}
+
+  autonomous:
+    description: >
+      Unattended operation. Allows everything except a hard deny-list.
+      Only safe behind a hardened container with restricted egress.
+    default: allow
+    rules:
+      - {match: "Bash(sudo *)",       decision: deny, reason: "Privilege escalation."}
+      - {match: "Bash(rm -rf /*)",    decision: deny, reason: "Catastrophic deletion."}
+      - {match: "Bash(chmod 777 *)",  decision: deny, reason: "Permission widening."}
+      - {match: "Bash(* --force *)",  decision: ask}
+      - {match: "Bash(git push *)",   decision: ask}
+      - {match: "Edit",  decision: allow, guard: workspace_write}
+      - {match: "Write", decision: allow, guard: workspace_write}

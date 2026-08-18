@@ -1,0 +1,29 @@
+# Secrets — .env holds a live CLAUDE_CODE_OAUTH_TOKEN. Never commit it.
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+id_rsa*
+credentials.json
+
+# AI session transcripts — may quote tokens, paths, or private code
+.specstory/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local test scratch
+.test-tmp/
