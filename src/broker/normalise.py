@@ -161,7 +161,9 @@ def normalise(msg: Any, idx: int) -> list[Event]:
 	# to five parallel workers, "which of them is still going" is the only thing
 	# an operator watching a long run actually wants to know, and as an unmapped
 	# Python repr it was the least readable line in the log.
-	if msg_type in ("TaskNotificationMessage", "TaskUpdatedMessage", "TaskStartedMessage"):
+	if msg_type in ("TaskNotificationMessage", "TaskUpdatedMessage",
+					"TaskStartedMessage", "TaskProgressMessage",
+					"TaskCompletedMessage"):
 		data = getattr(msg, "data", {}) or {}
 		patch = data.get("patch") or {}
 		return [
@@ -179,16 +181,27 @@ def normalise(msg: Any, idx: int) -> list[Event]:
 			)
 		]
 
+	# The single most actionable event the CLI emits, and the first version of
+	# this read `msg.status` / `msg.retry_after`, which do not exist — so a real
+	# rate limit logged as "None retry after Nones" and the run simply stopped
+	# with no explanation. The fields live on `rate_limit_info`, and `resets_at`
+	# is the one that matters: it says when it is worth trying again.
 	if msg_type == "RateLimitEvent":
+		info = getattr(msg, "rate_limit_info", None)
+		raw = getattr(info, "raw", None) or {}
 		return [
 			Event(
 				index=idx,
 				type="rate_limit",
 				at=format_ts(utcnow()),
 				data={
-					"status": getattr(msg, "status", None),
-					"retry_after": getattr(msg, "retry_after", None),
-					"details": _safe_repr(msg)[:500],
+					"status": getattr(info, "status", None) or raw.get("status"),
+					"resets_at": getattr(info, "resets_at", None) or raw.get("resets_at"),
+					"rate_limit_type": getattr(info, "rate_limit_type", None),
+					"utilization": getattr(info, "utilization", None),
+					"overage_status": getattr(info, "overage_status", None),
+					"overage_resets_at": getattr(info, "overage_resets_at", None),
+					"overage_disabled_reason": getattr(info, "overage_disabled_reason", None),
 				},
 			)
 		]

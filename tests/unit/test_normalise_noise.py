@@ -74,10 +74,29 @@ def test_empty_thinking_blocks_are_dropped() -> None:
 	assert [e.type for e in events] == ["assistant_text"]
 
 
-def test_rate_limit_is_its_own_event() -> None:
-	events = normalise(RateLimitEvent(status="throttled", retry_after=30), 0)
+def test_rate_limit_carries_the_reset_time() -> None:
+	"""The regression: this read msg.status/msg.retry_after, which do not exist,
+	so a real rate limit logged as "None retry after Nones" and the pipeline
+	stopped with nothing to say. resets_at is what makes resuming possible."""
+	info = SimpleNamespace(
+		status="rejected", resets_at=1787100000, rate_limit_type="five_hour",
+		utilization=1.0, overage_status=None, overage_resets_at=None,
+		overage_disabled_reason=None, raw={},
+	)
+	events = normalise(RateLimitEvent(rate_limit_info=info), 0)
 	assert [e.type for e in events] == ["rate_limit"]
-	assert events[0].data["status"] == "throttled"
+	assert events[0].data["status"] == "rejected"
+	assert events[0].data["resets_at"] == 1787100000
+
+
+def test_task_progress_is_a_subagent_event() -> None:
+	class TaskProgressMessage(SimpleNamespace):
+		pass
+
+	events = normalise(
+		TaskProgressMessage(subtype="task_progress", data={"task_id": "t1"}), 0
+	)
+	assert [e.type for e in events] == ["subagent"]
 
 
 def test_a_plain_string_user_turn_adds_nothing() -> None:
